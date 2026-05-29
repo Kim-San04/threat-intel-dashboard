@@ -73,7 +73,7 @@ function renderAll(d) {
   renderAbuseCard(d.abuseipdb);
   renderShodanCard(d.shodan);
   renderCharts(d);
-  renderMap(d.shodan);
+  renderMap(d);
   renderMeta(d);
 }
 
@@ -177,8 +177,12 @@ function renderAbuseCard(ab) {
 /* Shodan card */
 function renderShodanCard(sh) {
   const el = document.getElementById("sh-card-body");
-  if (!sh || sh.error || !sh.ip) {
+  if (!sh || !sh.ip) {
     el.innerHTML = `<p class="empty-state" style="padding:12px 0;font-size:.8rem">Only available for IP addresses.</p>`;
+    return;
+  }
+  if (sh.error) {
+    el.innerHTML = errHtml(`Shodan indisponible : ${sh.error}`);
     return;
   }
   const vulnHtml = (sh.vulns || []).length
@@ -260,13 +264,22 @@ function renderCharts(d) {
 }
 
 /* Map */
-function renderMap(sh) {
-  if (!sh || sh.error || sh.latitude == null) return;
-  const lat = sh.latitude;
-  const lng = sh.longitude;
+function renderMap(d) {
+  const sh  = d.shodan || {};
+  const geo = d.geo    || {};
+
+  const lat = sh.latitude  ?? geo.lat;
+  const lng = sh.longitude ?? geo.lon;
+  if (lat == null || lng == null) return;
+
+  const city    = sh.city         || geo.city    || "";
+  const country = sh.country_name || geo.country || "";
+  const label   = d.risk_label    || "low";
+
   map.setView([lat, lng], 6);
   if (mapMarker) mapMarker.remove();
-  const color = riskColor("high");
+
+  const color = riskColor(label);
   const icon = L.divIcon({
     className: "",
     html: `<div style="width:14px;height:14px;border-radius:50%;background:${color};
@@ -275,7 +288,7 @@ function renderMap(sh) {
     iconAnchor: [7, 7],
   });
   mapMarker = L.marker([lat, lng], { icon })
-    .bindPopup(`<b>${sh.ip}</b><br>${sh.city || ""} ${sh.country_name || ""}`)
+    .bindPopup(`<b>${d.ioc}</b><br>${city} ${country}`)
     .addTo(map)
     .openPopup();
 }

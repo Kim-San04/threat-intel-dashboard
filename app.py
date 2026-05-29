@@ -8,6 +8,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+import re
+import requests as _requests
 from modules import analyze_virustotal, analyze_abuseipdb, analyze_shodan
 
 app = Flask(__name__)
@@ -49,6 +51,21 @@ def compute_risk_score(vt: dict, abuse: dict, shodan: dict) -> int:
     return min(score, 100)
 
 
+def geolocate_ip(ip: str) -> dict:
+    """Free fallback geolocation via ip-api.com (no key required)."""
+    try:
+        resp = _requests.get(
+            f"http://ip-api.com/json/{ip}",
+            params={"fields": "lat,lon,country,countryCode,city,org,isp"},
+            timeout=5,
+        )
+        if resp.ok and resp.json().get("lat"):
+            return resp.json()
+    except Exception:
+        pass
+    return {}
+
+
 def risk_label(score: int) -> str:
     if score >= 75:
         return "critical"
@@ -79,13 +96,24 @@ def analyze():
     vt_result = analyze_virustotal(ioc)
     shodan_result = {}
     abuse_result = {}
+    geo_result = {}
 
-    import re
     is_ip = bool(re.match(r"^\d{1,3}(\.\d{1,3}){3}$", ioc))
 
     if is_ip:
         abuse_result = analyze_abuseipdb(ioc)
         shodan_result = analyze_shodan(ioc)
+        # Use Shodan geo if available, otherwise fallback to ip-api.com
+        if shodan_result.get("latitude") is not None:
+            geo_result = {
+                "lat": shodan_result["latitude"],
+                "lon": shodan_result["longitude"],
+                "country": shodan_result.get("country_name", ""),
+                "city": shodan_result.get("city", ""),
+                "org": shodan_result.get("org", ""),
+            }
+        else:
+            geo_result = geolocate_ip(ioc)
 
     score = compute_risk_score(vt_result, abuse_result, shodan_result)
     label = risk_label(score)
@@ -98,6 +126,7 @@ def analyze():
         "virustotal": vt_result,
         "abuseipdb": abuse_result,
         "shodan": shodan_result,
+        "geo": geo_result,
     }
 
     # Persist in session history (keep last 20)
