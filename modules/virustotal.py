@@ -24,17 +24,19 @@ def _detect_type(ioc: str) -> str:
 
 def analyze_virustotal(ioc: str) -> dict:
     ioc_type = _detect_type(ioc)
-    endpoints = {
-        "ip": f"{VT_BASE}/ip_addresses/{ioc}",
-        "domain": f"{VT_BASE}/domains/{ioc}",
-        "file": f"{VT_BASE}/files/{ioc}",
-        "url": f"{VT_BASE}/urls/{_url_id(ioc)}",
-    }
-    url = endpoints[ioc_type]
     try:
-        resp = requests.get(url, headers=_headers(), timeout=10)
-        resp.raise_for_status()
-        data = resp.json().get("data", {}).get("attributes", {})
+        if ioc_type == "url":
+            data = _analyze_url(ioc)
+        else:
+            endpoints = {
+                "ip": f"{VT_BASE}/ip_addresses/{ioc}",
+                "domain": f"{VT_BASE}/domains/{ioc}",
+                "file": f"{VT_BASE}/files/{ioc}",
+            }
+            resp = requests.get(endpoints[ioc_type], headers=_headers(), timeout=15)
+            resp.raise_for_status()
+            data = resp.json().get("data", {}).get("attributes", {})
+
         stats = data.get("last_analysis_stats", {})
         malicious = stats.get("malicious", 0)
         total = sum(stats.values()) if stats else 0
@@ -55,6 +57,39 @@ def analyze_virustotal(ioc: str) -> dict:
         return {"source": "VirusTotal", "ioc": ioc, "error": str(exc)}
     except Exception as exc:
         return {"source": "VirusTotal", "ioc": ioc, "error": str(exc)}
+
+
+def _analyze_url(url: str) -> dict:
+    """Submit URL to VT, then fetch results by analysis ID."""
+    # Try GET first (already scanned)
+    get_resp = requests.get(
+        f"{VT_BASE}/urls/{_url_id(url)}", headers=_headers(), timeout=15
+    )
+    if get_resp.ok:
+        return get_resp.json().get("data", {}).get("attributes", {})
+
+    # Not found — submit for scanning
+    post_resp = requests.post(
+        f"{VT_BASE}/urls",
+        headers=_headers(),
+        data={"url": url},
+        timeout=15,
+    )
+    post_resp.raise_for_status()
+    analysis_id = post_resp.json()["data"]["id"]
+
+    # Poll analysis result (up to 20s)
+    import time
+    for _ in range(4):
+        time.sleep(5)
+        analysis_resp = requests.get(
+            f"{VT_BASE}/analyses/{analysis_id}", headers=_headers(), timeout=15
+        )
+        if analysis_resp.ok:
+            attrs = analysis_resp.json().get("data", {}).get("attributes", {})
+            if attrs.get("status") == "completed":
+                return {"last_analysis_stats": attrs.get("stats", {})}
+    return {}
 
 
 def _url_id(url: str) -> str:
