@@ -19,9 +19,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
 function initMap() {
   map = L.map("map", { zoomControl: false }).setView([20, 0], 2);
-  L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
-    attribution: "&copy; CartoDB",
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    attribution: "&copy; OpenStreetMap contributors",
     maxZoom: 18,
+    className: "map-tiles-dark",
   }).addTo(map);
   L.control.zoom({ position: "bottomright" }).addTo(map);
 }
@@ -235,19 +236,43 @@ function renderCharts(d) {
     },
   });
 
-  // Shodan services bar
-  const services = (sh.services || []).slice(0, 8);
+  // Second chart: Shodan ports if available, else AbuseIPDB categories
   const abCtx = document.getElementById("sh-chart").getContext("2d");
   if (abChart) abChart.destroy();
+
+  const services = (sh.services || []).slice(0, 8);
+  const ab = d.abuseipdb || {};
+  const abCats = ab.category_counts || {};
+
+  // AbuseIPDB category labels (subset of official IDs)
+  const catNames = {
+    3:"Fraud Orders",4:"DDoS Attack",9:"Open Proxy",10:"Web Spam",
+    11:"Email Spam",14:"Port Scan",15:"Hacking",16:"SQL Injection",
+    17:"Spoofing",18:"Brute-Force",19:"Bad Web Bot",20:"Exploited Host",
+    21:"Web App Attack",22:"SSH",23:"IoT Targeted",
+  };
+
+  const useShodan = services.length > 0;
+  const titleEl = document.getElementById("sh-chart-title");
+  if (titleEl) titleEl.textContent = useShodan ? "Shodan Services" : "AbuseIPDB Attack Categories";
+  const labels = useShodan
+    ? services.map(s => `${s.port}/${s.transport || "tcp"}`)
+    : Object.keys(abCats).map(id => catNames[id] || `Cat ${id}`);
+  const dataVals = useShodan
+    ? services.map(() => 1)
+    : Object.values(abCats);
+  const colors = useShodan ? "#bc8cff88" : "#f8514988";
+  const borders = useShodan ? "#bc8cff" : "#f85149";
+
   abChart = new Chart(abCtx, {
     type: "bar",
     data: {
-      labels: services.map(s => s.port),
+      labels,
       datasets: [{
-        label: "Port",
-        data: services.map(() => 1),
-        backgroundColor: "#bc8cff88",
-        borderColor: "#bc8cff",
+        label: useShodan ? "Port" : "Reports",
+        data: dataVals,
+        backgroundColor: colors,
+        borderColor: borders,
         borderWidth: 1,
       }],
     },
@@ -255,8 +280,8 @@ function renderCharts(d) {
       indexAxis: "y",
       plugins: { legend: { display: false } },
       scales: {
-        x: { display: false },
-        y: { ticks: { color: "#8b949e", font: { size: 11 } }, grid: { color: "#30363d" } },
+        x: { ticks: { color: "#8b949e", font: { size: 10 } }, grid: { color: "#30363d" } },
+        y: { ticks: { color: "#8b949e", font: { size: 10 } }, grid: { color: "#30363d" } },
       },
       maintainAspectRatio: false,
     },
