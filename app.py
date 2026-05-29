@@ -3,20 +3,56 @@ import json
 import datetime
 from pathlib import Path
 
-from flask import Flask, render_template, request, jsonify, session, send_file
+import functools
+import base64
+from flask import Flask, render_template, request, jsonify, session, send_file, Response
+from flask_caching import Cache
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 from dotenv import load_dotenv
 
 load_dotenv()
 
 import re
 import requests as _requests
-from modules import analyze_virustotal, analyze_abuseipdb, analyze_shodan
+from modules import analyze_virustotal, analyze_abuseipdb, analyze_shodan, cvss_weighted_score
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "dev-secret-change-me")
 
+# Cache: IOC results kept 10 minutes in memory
+cache = Cache(app, config={"CACHE_TYPE": "SimpleCache", "CACHE_DEFAULT_TIMEOUT": 600})
+
+# Rate limiter: 60 analyses/minute par IP
+limiter = Limiter(
+    get_remote_address,
+    app=app,
+    default_limits=[],
+    storage_uri="memory://",
+)
+
 REPORTS_DIR = Path("reports")
 REPORTS_DIR.mkdir(exist_ok=True)
+
+_AUTH_USER = os.environ.get("DASHBOARD_USER", "")
+_AUTH_PASS = os.environ.get("DASHBOARD_PASSWORD", "")
+
+
+def require_auth(f):
+    """HTTP Basic Auth decorator — active only when DASHBOARD_USER is set."""
+    @functools.wraps(f)
+    def decorated(*args, **kwargs):
+        if not _AUTH_USER:
+            return f(*args, **kwargs)
+        auth = request.authorization
+        if not auth or auth.username != _AUTH_USER or auth.password != _AUTH_PASS:
+            return Response(
+                "Authentication required.",
+                401,
+                {"WWW-Authenticate": 'Basic realm="CTI Dashboard"'},
+            )
+        return f(*args, **kwargs)
+    return decorated
 
 
 # ---------------------------------------------------------------------------
@@ -41,11 +77,11 @@ def compute_risk_score(vt: dict, abuse: dict, shodan: dict) -> int:
         confidence = abuse.get("abuse_confidence_score", 0)
         score += int(confidence * 0.35)
 
-    # Shodan contribution (max 20)
+    # Shodan contribution (max 20) — CVSS-weighted CVEs + open ports
     if not shodan.get("error"):
-        vuln_count = len(shodan.get("vulns", []))
+        vulns = shodan.get("vulns", [])
         port_count = len(shodan.get("ports", []))
-        score += min(vuln_count * 5, 15)
+        score += cvss_weighted_score(vulns)
         score += min(port_count // 5, 5)
 
     return min(score, 100)
@@ -81,17 +117,25 @@ def risk_label(score: int) -> str:
 # ---------------------------------------------------------------------------
 
 @app.route("/")
+@require_auth
 def index():
     history = session.get("history", [])
     return render_template("dashboard.html", history=history)
 
 
 @app.route("/analyze", methods=["POST"])
+@require_auth
+@limiter.limit("60 per minute")
 def analyze():
     body = request.get_json(force=True)
     ioc = (body.get("ioc") or "").strip()
     if not ioc:
         return jsonify({"error": "IOC is required"}), 400
+
+    cache_key = f"ioc:{ioc}"
+    cached = cache.get(cache_key)
+    if cached:
+        return jsonify(cached)
 
     vt_result = analyze_virustotal(ioc)
     shodan_result = {}
@@ -114,6 +158,12 @@ def analyze():
             }
         else:
             geo_result = geolocate_ip(ioc)
+
+        # Enrich CVEs with CVSS scores (stored for display)
+        vulns = shodan_result.get("vulns", [])
+        if vulns and not shodan_result.get("error"):
+            from modules.cvss import fetch_cvss_scores
+            shodan_result["cvss_scores"] = fetch_cvss_scores(vulns)
 
     score = compute_risk_score(vt_result, abuse_result, shodan_result)
     label = risk_label(score)
@@ -139,10 +189,12 @@ def analyze():
     })
     session["history"] = history[:20]
 
+    cache.set(cache_key, payload)
     return jsonify(payload)
 
 
 @app.route("/export-pdf", methods=["POST"])
+@require_auth
 def export_pdf():
     try:
         from weasyprint import HTML
@@ -163,6 +215,25 @@ def export_pdf():
     return send_file(str(path), as_attachment=True, download_name=filename)
 
 
+@app.route("/export-json", methods=["POST"])
+@require_auth
+def export_json():
+    body = request.get_json(force=True)
+    data = body.get("data", {})
+    ioc = data.get("ioc", "unknown")
+    safe_name = "".join(c if c.isalnum() or c in "._-" else "_" for c in ioc)
+    ts = datetime.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    filename = f"report_{safe_name}_{ts}.json"
+    return (
+        json.dumps(data, indent=2, ensure_ascii=False),
+        200,
+        {
+            "Content-Type": "application/json",
+            "Content-Disposition": f'attachment; filename="{filename}"',
+        },
+    )
+
+
 @app.route("/tiles/<int:z>/<int:x>/<int:y>.png")
 def tile_proxy(z, x, y):
     """Proxy OSM tiles through Flask so the browser doesn't need external access."""
@@ -181,7 +252,65 @@ def tile_proxy(z, x, y):
         return b"", 502
 
 
+@app.route("/bulk", methods=["POST"])
+@require_auth
+@limiter.limit("10 per minute")
+def bulk_analyze():
+    """Accept a CSV file or newline-separated IOC list, return JSON array."""
+    results = []
+
+    if "file" in request.files:
+        f = request.files["file"]
+        content = f.read().decode("utf-8", errors="ignore")
+    else:
+        content = (request.form.get("iocs") or "").strip()
+
+    iocs = []
+    for line in content.splitlines():
+        line = line.strip().strip(",")
+        if line and not line.startswith("#"):
+            # CSV: take first column only
+            ioc = line.split(",")[0].strip()
+            if ioc:
+                iocs.append(ioc)
+
+    iocs = list(dict.fromkeys(iocs))[:50]  # deduplicate, cap at 50
+
+    for ioc in iocs:
+        cache_key = f"ioc:{ioc}"
+        cached = cache.get(cache_key)
+        if cached:
+            results.append(cached)
+            continue
+
+        vt_result = analyze_virustotal(ioc)
+        shodan_result, abuse_result, geo_result = {}, {}, {}
+        if re.match(r"^\d{1,3}(\.\d{1,3}){3}$", ioc):
+            abuse_result = analyze_abuseipdb(ioc)
+            shodan_result = analyze_shodan(ioc)
+            if shodan_result.get("latitude") is not None:
+                geo_result = {"lat": shodan_result["latitude"], "lon": shodan_result["longitude"],
+                              "country": shodan_result.get("country_name", ""), "city": shodan_result.get("city", "")}
+            else:
+                geo_result = geolocate_ip(ioc)
+
+        score = compute_risk_score(vt_result, abuse_result, shodan_result)
+        label = risk_label(score)
+        payload = {
+            "ioc": ioc,
+            "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+            "risk_score": score, "risk_label": label,
+            "virustotal": vt_result, "abuseipdb": abuse_result,
+            "shodan": shodan_result, "geo": geo_result,
+        }
+        cache.set(cache_key, payload)
+        results.append(payload)
+
+    return jsonify(results)
+
+
 @app.route("/history/clear", methods=["POST"])
+@require_auth
 def clear_history():
     session.pop("history", None)
     return jsonify({"ok": True})

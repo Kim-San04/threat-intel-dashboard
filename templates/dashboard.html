@@ -21,6 +21,7 @@
   <header class="topbar">
     <span class="logo">CTI <span>Dashboard</span></span>
     <span class="badge">v1.0</span>
+    <button class="export-btn" style="margin-left:auto" onclick="toggleBulk()">⚡ Bulk</button>
   </header>
 
   <!-- ============================================================ -->
@@ -67,6 +68,22 @@
       <button id="analyze-btn" class="btn-analyze" type="submit">Analyze</button>
     </form>
 
+    <!-- Bulk analysis toggle -->
+    <div id="bulk-section" style="display:none;flex-direction:column;gap:10px">
+      <div style="display:flex;gap:8px;align-items:flex-start">
+        <textarea id="bulk-input" class="search-input"
+          style="height:90px;resize:vertical;font-family:monospace;font-size:.8rem"
+          placeholder="One IOC per line, or upload a CSV file (first column used)…"></textarea>
+        <div style="display:flex;flex-direction:column;gap:6px">
+          <label class="btn-analyze" style="cursor:pointer;text-align:center;font-size:.82rem;padding:8px 14px">
+            📁 CSV<input id="bulk-file" type="file" accept=".csv,.txt" style="display:none" onchange="loadBulkFile(this)"/>
+          </label>
+          <button class="btn-analyze" style="font-size:.82rem;padding:8px 14px" onclick="runBulk()">Run Bulk</button>
+        </div>
+      </div>
+      <div id="bulk-results"></div>
+    </div>
+
     <!-- Error banner -->
     <div id="error-banner" class="error-banner"></div>
 
@@ -85,7 +102,10 @@
       <!-- Meta line + export -->
       <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
         <span id="result-meta" style="color:var(--text-muted);font-size:.82rem;font-family:monospace"></span>
-        <button class="export-btn" onclick="exportPDF()">⬇ Export PDF</button>
+        <div style="display:flex;gap:8px">
+          <button class="export-btn" onclick="exportJSON()">⬇ JSON</button>
+          <button class="export-btn" onclick="exportPDF()">⬇ PDF</button>
+        </div>
       </div>
 
       <!-- Risk hero card -->

@@ -186,8 +186,13 @@ function renderShodanCard(sh) {
     el.innerHTML = errHtml(`Shodan indisponible : ${sh.error}`);
     return;
   }
+  const cvss = sh.cvss_scores || {};
   const vulnHtml = (sh.vulns || []).length
-    ? `<div class="tag-list">${sh.vulns.map(v => `<span class="vuln-chip">${v}</span>`).join("")}</div>`
+    ? `<div class="tag-list">${sh.vulns.map(v => {
+        const score = cvss[v];
+        const color = score >= 9 ? "#ff0040" : score >= 7 ? "#f85149" : score >= 4 ? "#d29922" : "#8b949e";
+        return `<span class="vuln-chip" style="border-color:${color};color:${color}" title="CVSS ${score ?? '?'}">${v}${score != null ? ` <b>${score}</b>` : ""}</span>`;
+      }).join("")}</div>`
     : "";
   const portHtml = (sh.ports || []).length
     ? `<div class="ports-grid">${sh.ports.map(p => `<span class="port-chip">${p}</span>`).join("")}</div>`
@@ -344,8 +349,91 @@ async function clearHistory() {
 }
 
 // ------------------------------------------------------------------ //
-//  PDF export
+//  Bulk analysis
 // ------------------------------------------------------------------ //
+function toggleBulk() {
+  const s = document.getElementById("bulk-section");
+  s.style.display = s.style.display === "none" ? "flex" : "none";
+}
+
+function loadBulkFile(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => { document.getElementById("bulk-input").value = e.target.result; };
+  reader.readAsText(file);
+}
+
+async function runBulk() {
+  const iocs = document.getElementById("bulk-input").value.trim();
+  if (!iocs) return;
+  const container = document.getElementById("bulk-results");
+  container.innerHTML = `<p style="color:var(--text-muted);font-size:.82rem">Analyzing… (may take a while)</p>`;
+
+  const form = new FormData();
+  form.append("iocs", iocs);
+
+  try {
+    const resp = await fetch("/bulk", { method: "POST", body: form });
+    const results = await resp.json();
+    if (!Array.isArray(results)) throw new Error(results.error || "Server error");
+    renderBulkTable(results);
+  } catch (err) {
+    container.innerHTML = `<p style="color:var(--risk-high);font-size:.82rem">${err.message}</p>`;
+  }
+}
+
+function renderBulkTable(results) {
+  const rows = results.map(r => {
+    const color = riskColor(r.risk_label);
+    return `<tr>
+      <td style="font-family:monospace;font-size:.8rem">${r.ioc}</td>
+      <td style="font-weight:700;color:${color}">${r.risk_score}</td>
+      <td style="color:${color};text-transform:uppercase;font-size:.75rem">${r.risk_label}</td>
+      <td style="font-size:.78rem">${r.virustotal?.malicious ?? "—"} / ${r.virustotal?.total_engines ?? "—"}</td>
+      <td style="font-size:.78rem">${r.abuseipdb?.abuse_confidence_score ?? "—"}%</td>
+      <td><button class="export-btn" style="padding:3px 8px;font-size:.72rem"
+          onclick='runAnalysis("${r.ioc}")'>Detail</button></td>
+    </tr>`;
+  }).join("");
+
+  document.getElementById("bulk-results").innerHTML = `
+    <table style="width:100%;border-collapse:collapse;margin-top:10px;font-size:.82rem">
+      <thead>
+        <tr style="color:var(--text-muted);text-align:left;border-bottom:1px solid var(--border)">
+          <th style="padding:6px 10px">IOC</th>
+          <th style="padding:6px 10px">Score</th>
+          <th style="padding:6px 10px">Level</th>
+          <th style="padding:6px 10px">VT Det.</th>
+          <th style="padding:6px 10px">AbuseIPDB</th>
+          <th style="padding:6px 10px"></th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+}
+
+// ------------------------------------------------------------------ //
+//  Exports
+// ------------------------------------------------------------------ //
+async function exportJSON() {
+  if (!currentData) return;
+  const resp = await fetch("/export-json", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ data: currentData }),
+  });
+  if (!resp.ok) { alert("JSON export failed"); return; }
+  const blob = await resp.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `cti_report_${currentData.ioc}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 async function exportPDF() {
   if (!currentData) return;
   const resp = await fetch("/export-pdf", {
