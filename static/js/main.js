@@ -19,7 +19,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
 function initMap() {
   map = L.map("map", { zoomControl: false }).setView([20, 0], 2);
-  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  L.tileLayer("/tiles/{z}/{x}/{y}.png", {
     attribution: "&copy; OpenStreetMap contributors",
     maxZoom: 18,
     className: "map-tiles-dark",

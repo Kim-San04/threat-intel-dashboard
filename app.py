@@ -163,6 +163,24 @@ def export_pdf():
     return send_file(str(path), as_attachment=True, download_name=filename)
 
 
+@app.route("/tiles/<int:z>/<int:x>/<int:y>.png")
+def tile_proxy(z, x, y):
+    """Proxy OSM tiles through Flask so the browser doesn't need external access."""
+    url = f"https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+    try:
+        resp = _requests.get(
+            url,
+            headers={"User-Agent": "CTI-Dashboard/1.0 (educational project)"},
+            timeout=10,
+        )
+        return resp.content, 200, {
+            "Content-Type": "image/png",
+            "Cache-Control": "public, max-age=86400",
+        }
+    except Exception:
+        return b"", 502
+
+
 @app.route("/history/clear", methods=["POST"])
 def clear_history():
     session.pop("history", None)

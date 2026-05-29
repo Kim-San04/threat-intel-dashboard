@@ -350,8 +350,8 @@ a:hover { text-decoration: underline; }
 /* ------------------------------------------------------------------ */
 #map { height: 300px; border-radius: 0 0 var(--radius) var(--radius); }
 
-/* OSM tiles dark mode: invert + hue-rotate to get dark tiles */
-.map-tiles-dark {
+/* OSM tiles dark mode: filter applies to img elements inside the tile layer */
+.map-tiles-dark img {
   filter: invert(100%) hue-rotate(180deg) brightness(85%) contrast(90%) saturate(80%);
 }
 
